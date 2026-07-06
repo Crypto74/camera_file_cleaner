@@ -12,6 +12,9 @@ Deletion is permanent.
 
 import json
 import os
+import queue
+import threading
+import time
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
@@ -44,6 +47,14 @@ class CameraCleaner(tk.Tk):
 
         self.folder = None
         self.files = []
+
+        # background scan state
+        self._scan_seq = 0
+        self._scan_queue = queue.Queue()
+        self._scanning = False
+        self._polling = False
+        self._scan_start = 0.0
+        self._last_scan_secs = 0.0
 
         self._build_menu()
         self._build_ui()
@@ -144,7 +155,11 @@ class CameraCleaner(tk.Tk):
         self._save_config()
 
     def _on_focus(self, event):
-        if event.widget is self and self.folder:
+        # skip the automatic rescan while one is already running, and for
+        # folders that took long to scan (e.g. a whole drive) so focus
+        # changes don't keep restarting an expensive search
+        if (event.widget is self and self.folder
+                and not self._scanning and self._last_scan_secs < 2.0):
             self.refresh()
 
     def open_folder(self):
@@ -160,47 +175,91 @@ class CameraCleaner(tk.Tk):
         self.refresh()
 
     def refresh(self):
+        self._scan_seq += 1
         self.tree.delete(*self.tree.get_children())
         self.files = []
+        self.delete_btn.config(state="disabled")
         if not self.folder:
+            self._scanning = False
             return
         if not self.folder.is_dir():
             self.folder_var.set(f"{self.folder} (not found)")
             self.status_var.set("0 files")
-            self.delete_btn.config(state="disabled")
+            self._scanning = False
             return
 
+        # the folder and all subfolders are searched (SD cards keep the
+        # files in e.g. DCIM\100MEDIA); the walk runs in a background
+        # thread so the window stays responsive on large drives
         enabled = {ext for ext, var in self.type_vars.items() if var.get()}
         self.folder_var.set(str(self.folder))
+        self.status_var.set("Searching...")
+        self._scanning = True
+        self._scan_start = time.monotonic()
+        threading.Thread(target=self._scan_worker,
+                         args=(self._scan_seq, self.folder, enabled),
+                         daemon=True).start()
+        if not self._polling:
+            self._poll_scan()
 
-        # search the folder and all subfolders (SD cards keep the files
-        # in e.g. DCIM\100MEDIA)
-        matches = []
-        for root, dirs, names in os.walk(self.folder):
+    def _scan_worker(self, seq, folder, enabled):
+        found = []
+        dirs_done = 0
+        for root, dirs, names in os.walk(folder):
+            if seq != self._scan_seq:
+                return  # a newer scan was started; abandon this one
             for name in names:
                 if os.path.splitext(name)[1].lower() in enabled:
-                    matches.append(Path(root) / name)
-        matches.sort(key=lambda p: str(p).lower())
+                    path = Path(root) / name
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        continue
+                    found.append((path, stat.st_size, stat.st_mtime))
+            dirs_done += 1
+            if dirs_done % 200 == 0:
+                self._scan_queue.put(("progress", seq, len(found)))
+        self._scan_queue.put(("done", seq, found))
 
+    def _poll_scan(self):
+        self._polling = True
+        try:
+            while True:
+                kind, seq, payload = self._scan_queue.get_nowait()
+                if seq != self._scan_seq:
+                    continue
+                if kind == "progress":
+                    self.status_var.set(
+                        f"Searching... {payload} files found so far")
+                else:
+                    self._scanning = False
+                    self._show_results(payload)
+        except queue.Empty:
+            pass
+        if self._scanning:
+            self.after(100, self._poll_scan)
+        else:
+            self._polling = False
+
+    def _show_results(self, found):
+        self._last_scan_secs = time.monotonic() - self._scan_start
+        found.sort(key=lambda item: str(item[0]).lower())
         total = 0
-        counts = {ext: 0 for ext in enabled}
-        for path in matches:
-            try:
-                stat = path.stat()
-            except OSError:
-                continue
+        counts = {}
+        for path, size, mtime in found:
             self.files.append(path)
-            counts[path.suffix.lower()] += 1
-            total += stat.st_size
-            modified = datetime.fromtimestamp(
-                stat.st_mtime).strftime("%d-%m-%Y %H:%M")
+            ext = path.suffix.lower()
+            counts[ext] = counts.get(ext, 0) + 1
+            total += size
+            modified = datetime.fromtimestamp(mtime).strftime(
+                "%d-%m-%Y %H:%M")
             self.tree.insert("", "end",
                              text=str(path.relative_to(self.folder)),
-                             values=(format_size(stat.st_size), modified))
+                             values=(format_size(size), modified))
 
         count = len(self.files)
         breakdown = ", ".join(f"{n} {ext[1:].upper()}"
-                              for ext, n in counts.items() if n)
+                              for ext, n in sorted(counts.items()))
         status = f"{count} file{'s' if count != 1 else ''}"
         if breakdown and len(counts) > 1:
             status += f" ({breakdown})"
@@ -210,6 +269,8 @@ class CameraCleaner(tk.Tk):
         self.delete_btn.config(state="normal" if count else "disabled")
 
     def delete_all(self):
+        if self._scanning:
+            return
         if not self.files:
             messagebox.showinfo("Camera File Cleaner",
                                 "There are no files to delete.")

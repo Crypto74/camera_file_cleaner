@@ -18,6 +18,8 @@ deleted safely — the original videos (MP4) are never touched.
 
 - Lists all preview files in a folder and all its subfolders (so you can
   just select the root of the SD card) with size and modification date
+- The search runs in a background thread, so the window stays responsive
+  even when scanning a whole drive ("Searching... N files found so far")
 - Checkboxes per file type (LRF / LRV / THM), all enabled by default
 - Status bar with per-type counts and total size
 - One button deletes everything shown in the list (with confirmation —
