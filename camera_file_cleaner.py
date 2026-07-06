@@ -172,23 +172,31 @@ class CameraCleaner(tk.Tk):
 
         enabled = {ext for ext, var in self.type_vars.items() if var.get()}
         self.folder_var.set(str(self.folder))
+
+        # search the folder and all subfolders (SD cards keep the files
+        # in e.g. DCIM\100MEDIA)
+        matches = []
+        for root, dirs, names in os.walk(self.folder):
+            for name in names:
+                if os.path.splitext(name)[1].lower() in enabled:
+                    matches.append(Path(root) / name)
+        matches.sort(key=lambda p: str(p).lower())
+
         total = 0
         counts = {ext: 0 for ext in enabled}
-        for path in sorted(self.folder.glob("*"),
-                           key=lambda p: p.name.lower()):
-            ext = path.suffix.lower()
-            if path.is_file() and ext in enabled:
-                try:
-                    stat = path.stat()
-                except OSError:
-                    continue
-                self.files.append(path)
-                counts[ext] += 1
-                total += stat.st_size
-                modified = datetime.fromtimestamp(
-                    stat.st_mtime).strftime("%d-%m-%Y %H:%M")
-                self.tree.insert("", "end", text=path.name,
-                                 values=(format_size(stat.st_size), modified))
+        for path in matches:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            self.files.append(path)
+            counts[path.suffix.lower()] += 1
+            total += stat.st_size
+            modified = datetime.fromtimestamp(
+                stat.st_mtime).strftime("%d-%m-%Y %H:%M")
+            self.tree.insert("", "end",
+                             text=str(path.relative_to(self.folder)),
+                             values=(format_size(stat.st_size), modified))
 
         count = len(self.files)
         breakdown = ", ".join(f"{n} {ext[1:].upper()}"

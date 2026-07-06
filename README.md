@@ -16,7 +16,8 @@ deleted safely — the original videos (MP4) are never touched.
 
 ## Features
 
-- Lists all preview files in a folder with size and modification date
+- Lists all preview files in a folder and all its subfolders (so you can
+  just select the root of the SD card) with size and modification date
 - Checkboxes per file type (LRF / LRV / THM), all enabled by default
 - Status bar with per-type counts and total size
 - One button deletes everything shown in the list (with confirmation —
